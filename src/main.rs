@@ -61,6 +61,10 @@ struct BuildVerb {
     args: ArgStack,
 }
 
+struct BasicVerb {
+    args: ArgStack,
+}
+
 struct ConfiguredBuild {
     args: ArgStack,
 }
@@ -79,6 +83,17 @@ struct BuildConfiguration {
     desktop_notify: bool,
     console_cohesion: bool,
     build_tests: bool,
+}
+
+struct TestConfiguration {
+    package: String,
+    desktop_notify: bool,
+    console_cohesion: bool,
+}
+
+struct TestResultConfig {
+    package: String,
+    all: bool,
 }
 
 enum What {
@@ -115,6 +130,33 @@ impl ColconInvocation {
         }
         if base_setup.merge {
             res.args.arg("--merge-install");
+        }
+        res
+    }
+
+    fn test(self, config: &TestConfiguration) -> BasicVerb {
+        let mut res = BasicVerb { args: self.args };
+        // TODO: log is probably needed here?
+        res.args.arg("test");
+        res.args.arg("--event-handlers");
+        res.args
+            .arg(handler_str("desktop_notification", config.desktop_notify));
+        res.args
+            .arg(handler_str("console_cohesion", config.console_cohesion));
+        res.args.args(["--packages-select", &config.package]);
+        res
+    }
+
+    fn test_result(self, config: &TestResultConfig) -> BasicVerb {
+        let mut res = BasicVerb { args: self.args };
+        // TODO: log is probably needed here?
+        res.args.arg("test-result");
+        res.args.args([
+            "--test-result-base",
+            &format!("{}/build/{}", self.workspace, config.package),
+        ]);
+        if config.all {
+            res.args.arg("--all");
         }
         res
     }
@@ -205,6 +247,34 @@ impl ConfiguredBuild {
         println!("{:?}", cmd);
         cmd.status()
     }
+}
+
+impl BasicVerb {
+    fn run(&self) -> io::Result<ExitStatus> {
+        let mut cmd = Command::new("colcon");
+        cmd.args(self.args.iter());
+        println!("{:?}", cmd);
+        cmd.status()
+    }
+}
+
+fn ninja_build_target(workspace: &str, package: &str, target: &str) -> io::Result<ExitStatus> {
+    let mut cmd = Command::new("ninja");
+    cmd.arg("-C");
+    cmd.arg(format!("{workspace}/build/{package}"));
+    cmd.arg(target);
+    println!("{:?}", cmd);
+    cmd.status()
+}
+
+fn run_single_ctest(workspace: &str, package: &str, target: &str) -> io::Result<ExitStatus> {
+    let mut cmd = Command::new("ctest");
+    cmd.arg("--test-dir");
+    cmd.arg(format!("{workspace}/build/{package}"));
+    cmd.arg("-R");
+    cmd.arg(format!("^{target}$"));
+    println!("{:?}", cmd);
+    cmd.status()
 }
 
 fn build_upstream_and_package(package: &str) -> io::Result<ExitStatus> {
