@@ -1,8 +1,9 @@
 use std::{
-    io,
     ops::Deref,
     process::{Command, ExitStatus},
 };
+
+use clap::{Parser, Subcommand};
 
 enum BuildType {
     Debug,
@@ -13,11 +14,12 @@ enum BuildType {
 impl BuildType {
     fn apply(&self, cmd: &mut ArgStack) {
         cmd.arg("--cmake-args");
-        cmd.arg(match self {
+        let t = match self {
             BuildType::Debug => "Debug",
             BuildType::Release => "Release",
             BuildType::RelWithDebInfo => "RelWithDebInfo",
-        });
+        };
+        cmd.arg(format!("-DCMAKE_BUILD_TYPE={t}"));
     }
 }
 
@@ -231,8 +233,17 @@ impl BuildVerb {
     }
 }
 
+fn log_command(command: &Command)
+{
+    print!(">>> {}", command.get_program().to_string_lossy());
+    for arg in command.get_args() {
+        print!(" {}", arg.to_string_lossy());
+    }
+    println!();
+}
+
 impl ConfiguredBuild {
-    fn run(&self, what: &What) -> io::Result<ExitStatus> {
+    fn run(&self, what: &What) -> ExitStatus {
         let mut cmd = Command::new("colcon");
         cmd.args(self.args.iter());
         match what {
@@ -244,60 +255,182 @@ impl ConfiguredBuild {
                 cmd.arg("--packages-select").arg(package);
             }
         }
-        println!("{:?}", cmd);
-        cmd.status()
+        log_command(&cmd);
+        cmd.status().expect("'colcon' not found")
     }
 }
 
 impl BasicVerb {
-    fn run(&self) -> io::Result<ExitStatus> {
+    fn run(&self) -> ExitStatus {
         let mut cmd = Command::new("colcon");
         cmd.args(self.args.iter());
-        println!("{:?}", cmd);
-        cmd.status()
+        log_command(&cmd);
+        cmd.status().expect("'colcon' not found")
     }
 }
 
-fn ninja_build_target(workspace: &str, package: &str, target: &str) -> io::Result<ExitStatus> {
+fn ninja_build_target(workspace: &str, package: &str, target: &str) -> ExitStatus {
     let mut cmd = Command::new("ninja");
     cmd.arg("-C");
     cmd.arg(format!("{workspace}/build/{package}"));
     cmd.arg(target);
-    println!("{:?}", cmd);
-    cmd.status()
+    log_command(&cmd);
+    cmd.status().expect("'ninja' not found")
 }
 
-fn run_single_ctest(workspace: &str, package: &str, target: &str) -> io::Result<ExitStatus> {
+fn run_single_ctest(workspace: &str, package: &str, target: &str) -> ExitStatus {
     let mut cmd = Command::new("ctest");
     cmd.arg("--test-dir");
     cmd.arg(format!("{workspace}/build/{package}"));
     cmd.arg("-R");
     cmd.arg(format!("^{target}$"));
-    println!("{:?}", cmd);
-    cmd.status()
+    log_command(&cmd);
+    cmd.status().expect("'ctest' not found")
 }
 
-fn build_upstream_and_package(package: &str) -> io::Result<ExitStatus> {
-    let build_output = BuildOutput::default();
-    let upstream = ColconInvocation::new(".", false)
-        .build(&build_output)
-        .configure(&BuildConfiguration::upstream());
+/// A colcon wrapper for faster change compile test cycles
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    #[arg(short, long)]
+    workspace: Option<String>,
 
-    let this = ColconInvocation::new(".", false)
-        .build(&build_output)
-        .configure(&BuildConfiguration::active());
+    #[command(subcommand)]
+    verb: Verbs,
+}
 
-    let status = upstream.run(&What::DependenciesFor(package.into()))?;
+#[derive(Subcommand)]
+enum Verbs {
+    /// Build a package
+    Build {
+        /// The package to build
+        package: String,
+
+        /// Whether to skip rebuilding dependencies
+        #[arg(short, long, default_value_t = false)]
+        skip_dependencies: bool,
+    },
+
+    /// Run tests for a package
+    Test {
+        /// The package to test
+        package: String,
+
+        /// Build and run only this test (default: run all tests)
+        #[arg(short, long)]
+        test: Option<String>,
+
+        /// Don't rebuild the package
+        #[arg(short, long, default_value_t = false)]
+        skip_rebuild: bool,
+
+        /// Rebuild dependencies of package
+        #[arg(short, long, default_value_t = false)]
+        rebuild_dependencies: bool,
+    },
+}
+
+fn exit_on_error(status: ExitStatus) {
     match status.code() {
-        Some(0) => this.run(&What::ThisPackage(package.into())),
-        _ => Ok(status),
+        Some(0) => {}
+        Some(code) => {
+            std::process::exit(code);
+        }
+        None => {
+            std::process::exit(-1);
+        }
     }
 }
+
+// TODOs:
+// - auto-detect package
+// - test from filename
+// - get test stdout (--rerun-failed --output-on-failure)
+// - expose more config options
+// - persist/load options from disk
 
 fn main() {
-    let status = build_upstream_and_package("test").expect("'colcon' not found");
-    if let Some(code) = status.code() {
-        std::process::exit(code);
+    let cli = Cli::parse();
+    let ws = cli.workspace.unwrap_or(".".into());
+    match &cli.verb {
+        Verbs::Build {
+            package,
+            skip_dependencies,
+        } => {
+            if !skip_dependencies {
+                println!("Building dependencies...");
+                let status = ColconInvocation::new(&ws, false)
+                    .build(&BuildOutput::default())
+                    .configure(&BuildConfiguration::upstream())
+                    .run(&What::DependenciesFor(package.clone()));
+                exit_on_error(status);
+            }
+            println!("Building '{package}'...");
+            let status = ColconInvocation::new(&ws, false)
+                .build(&BuildOutput::default())
+                .configure(&BuildConfiguration::active())
+                .run(&What::ThisPackage(package.clone()));
+            exit_on_error(status);
+        }
+
+        Verbs::Test {
+            package,
+            test,
+            skip_rebuild,
+            rebuild_dependencies,
+        } => {
+            if *rebuild_dependencies && !skip_rebuild {
+                println!("Building dependencies...");
+                let status = ColconInvocation::new(&ws, false)
+                    .build(&BuildOutput::default())
+                    .configure(&BuildConfiguration::upstream())
+                    .run(&What::DependenciesFor(package.clone()));
+                exit_on_error(status);
+                if test.is_some() {
+                    println!("Building '{package}'...");
+                    let status = ColconInvocation::new(&ws, false)
+                        .build(&BuildOutput::default())
+                        .configure(&BuildConfiguration::active())
+                        .run(&What::ThisPackage(package.clone()));
+                    exit_on_error(status);
+                }
+            }
+            if !skip_rebuild {
+                if let Some(test) = test {
+                    println!("Building test '{test}' in '{package}'...");
+                    let status = ninja_build_target(&ws, package, test);
+                    exit_on_error(status);
+                } else {
+                    println!("Building '{package}'...");
+                    let status = ColconInvocation::new(&ws, false)
+                        .build(&BuildOutput::default())
+                        .configure(&BuildConfiguration::active())
+                        .run(&What::ThisPackage(package.clone()));
+                    exit_on_error(status);
+                }
+            }
+            if let Some(test) = test {
+                println!("Running test '{test}' in '{package}'...");
+                let status = run_single_ctest(&ws, package, test);
+                exit_on_error(status);
+            } else {
+                println!("Running tests for '{package}'...");
+                let status = ColconInvocation::new(&ws, true)
+                    .test(&TestConfiguration {
+                        package: package.clone(),
+                        desktop_notify: true,
+                        console_cohesion: false,
+                    })
+                    .run();
+                exit_on_error(status);
+                let status = ColconInvocation::new(&ws, false)
+                    .test_result(&TestResultConfig {
+                        package: package.clone(),
+                        all: true,
+                    })
+                    .run();
+                exit_on_error(status);
+            }
+        }
     }
-    std::process::exit(-1);
 }
