@@ -77,24 +77,69 @@ struct BuildOutput {
     merge: bool,
 }
 
+struct EventHandlers {
+    desktop_notification: bool,
+    console_cohesion: bool,
+    summary: bool,
+    console_start_end: bool,
+}
+
+impl Default for EventHandlers {
+    fn default() -> Self {
+        Self {
+            desktop_notification: false,
+            console_cohesion: false,
+            summary: true,
+            console_start_end: true,
+        }
+    }
+}
+
+impl EventHandlers {
+    fn silent() -> Self {
+        Self {
+            desktop_notification: false,
+            console_cohesion: false,
+            summary: false,
+            console_start_end: false,
+        }
+    }
+
+    fn compile_logs_only() -> Self {
+        let mut res = Self::silent();
+        res.console_cohesion = true;
+        res
+    }
+
+    fn apply(&self, args: &mut ArgStack) {
+        args.arg("--event-handlers");
+        args.arg(handler_str("summary", self.summary));
+        args.arg(handler_str("console_start_end", self.console_start_end));
+        args.arg(handler_str("console_cohesion", self.console_cohesion));
+        args.arg(handler_str(
+            "desktop_notification",
+            self.desktop_notification,
+        ));
+    }
+}
+
 struct BuildConfiguration {
     mixins: Vec<String>,
     cmake_args: Vec<String>,
     build_type: BuildType,
     parallel_jobs: Option<u32>,
-    desktop_notify: bool,
-    console_cohesion: bool,
+    event_handlers: EventHandlers,
     build_tests: bool,
 }
 
 struct TestConfiguration {
     package: String,
-    desktop_notify: bool,
-    console_cohesion: bool,
+    event_handlers: EventHandlers,
 }
 
 struct TestResultConfig {
     package: String,
+    verbose: bool,
     all: bool,
 }
 
@@ -141,10 +186,8 @@ impl ColconInvocation {
         // TODO: log is probably needed here?
         res.args.arg("test");
         res.args.arg("--event-handlers");
-        res.args
-            .arg(handler_str("desktop_notification", config.desktop_notify));
-        res.args
-            .arg(handler_str("console_cohesion", config.console_cohesion));
+        config.event_handlers.apply(&mut res.args);
+        res.args.args(["--ctest-args", "--output-on-failure"]);
         res.args.args(["--packages-select", &config.package]);
         res
     }
@@ -157,6 +200,9 @@ impl ColconInvocation {
             "--test-result-base",
             &format!("{}/build/{}", self.workspace, config.package),
         ]);
+        if config.verbose {
+            res.args.arg("--verbose");
+        }
         if config.all {
             res.args.arg("--all");
         }
@@ -184,8 +230,7 @@ impl BuildConfiguration {
             cmake_args: vec![],
             build_type: BuildType::Debug,
             parallel_jobs: Some(8),
-            desktop_notify: false,
-            console_cohesion: false,
+            event_handlers: EventHandlers::default(),
             build_tests: false,
         }
     }
@@ -199,8 +244,22 @@ impl BuildConfiguration {
             cmake_args: vec![],
             build_type: BuildType::Debug,
             parallel_jobs: Some(8),
-            desktop_notify: true,
-            console_cohesion: true,
+            event_handlers: EventHandlers::compile_logs_only(),
+            build_tests: true,
+        }
+    }
+
+    fn for_testing() -> BuildConfiguration {
+        // TODO: add summary- and console_start_end-
+        BuildConfiguration {
+            mixins: Self::DEFAULT_MIXINS
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<String>>(),
+            cmake_args: vec![],
+            build_type: BuildType::Debug,
+            parallel_jobs: Some(8),
+            event_handlers: EventHandlers::compile_logs_only(),
             build_tests: true,
         }
     }
@@ -214,11 +273,7 @@ impl BuildVerb {
             res.args
                 .args(["--executor", "parallel", "--parallel-workers", &n_arg]);
         }
-        res.args.arg("--event-handlers");
-        res.args
-            .arg(handler_str("desktop_notification", config.desktop_notify));
-        res.args
-            .arg(handler_str("console_cohesion", config.console_cohesion));
+        config.event_handlers.apply(&mut res.args);
         if !config.mixins.is_empty() {
             res.args.arg("--mixin").args(config.mixins.iter());
         }
@@ -233,9 +288,16 @@ impl BuildVerb {
     }
 }
 
-fn log_command(command: &Command)
-{
-    print!(">>> {}", command.get_program().to_string_lossy());
+macro_rules! header {
+    ($($l:tt)*) => {
+        print!("┌[ ");
+        print!($($l)*);
+        println!(" ]");
+    };
+}
+
+fn log_command(command: &Command) {
+    print!("└> {}", command.get_program().to_string_lossy());
     for arg in command.get_args() {
         print!(" {}", arg.to_string_lossy());
     }
@@ -282,6 +344,7 @@ fn run_single_ctest(workspace: &str, package: &str, target: &str) -> ExitStatus 
     let mut cmd = Command::new("ctest");
     cmd.arg("--test-dir");
     cmd.arg(format!("{workspace}/build/{package}"));
+    // cmd.arg("--output-on-failure");
     cmd.arg("-R");
     cmd.arg(format!("^{target}$"));
     log_command(&cmd);
@@ -358,14 +421,14 @@ fn main() {
             skip_dependencies,
         } => {
             if !skip_dependencies {
-                println!("Building dependencies...");
+                header!("Building dependencies");
                 let status = ColconInvocation::new(&ws, false)
                     .build(&BuildOutput::default())
                     .configure(&BuildConfiguration::upstream())
                     .run(&What::DependenciesFor(package.clone()));
                 exit_on_error(status);
             }
-            println!("Building '{package}'...");
+            header!("Building '{package}'");
             let status = ColconInvocation::new(&ws, false)
                 .build(&BuildOutput::default())
                 .configure(&BuildConfiguration::active())
@@ -380,14 +443,14 @@ fn main() {
             rebuild_dependencies,
         } => {
             if *rebuild_dependencies && !skip_rebuild {
-                println!("Building dependencies...");
+                header!("Building dependencies");
                 let status = ColconInvocation::new(&ws, false)
                     .build(&BuildOutput::default())
                     .configure(&BuildConfiguration::upstream())
                     .run(&What::DependenciesFor(package.clone()));
                 exit_on_error(status);
                 if test.is_some() {
-                    println!("Building '{package}'...");
+                    header!("Building '{package}'");
                     let status = ColconInvocation::new(&ws, false)
                         .build(&BuildOutput::default())
                         .configure(&BuildConfiguration::active())
@@ -397,35 +460,36 @@ fn main() {
             }
             if !skip_rebuild {
                 if let Some(test) = test {
-                    println!("Building test '{test}' in '{package}'...");
+                    header!("Building test '{test}' in '{package}'");
                     let status = ninja_build_target(&ws, package, test);
                     exit_on_error(status);
                 } else {
-                    println!("Building '{package}'...");
+                    header!("Building '{package}'");
                     let status = ColconInvocation::new(&ws, false)
                         .build(&BuildOutput::default())
-                        .configure(&BuildConfiguration::active())
+                        .configure(&BuildConfiguration::for_testing())
                         .run(&What::ThisPackage(package.clone()));
                     exit_on_error(status);
                 }
             }
             if let Some(test) = test {
-                println!("Running test '{test}' in '{package}'...");
+                header!("Running test '{test}' in '{package}'");
                 let status = run_single_ctest(&ws, package, test);
                 exit_on_error(status);
             } else {
-                println!("Running tests for '{package}'...");
+                header!("Running tests for '{package}'");
                 let status = ColconInvocation::new(&ws, true)
                     .test(&TestConfiguration {
                         package: package.clone(),
-                        desktop_notify: true,
-                        console_cohesion: false,
+                        event_handlers: EventHandlers::silent(),
                     })
                     .run();
                 exit_on_error(status);
+                header!("Test results for '{package}'");
                 let status = ColconInvocation::new(&ws, false)
                     .test_result(&TestResultConfig {
                         package: package.clone(),
+                        verbose: true,
                         all: true,
                     })
                     .run();
