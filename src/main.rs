@@ -1,3 +1,4 @@
+use anstyle::{AnsiColor, Color, Style};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -276,21 +277,6 @@ impl BuildConfiguration {
             build_tests: true,
         }
     }
-
-    fn for_testing() -> BuildConfiguration {
-        // TODO: add summary- and console_start_end-
-        BuildConfiguration {
-            mixins: Self::DEFAULT_MIXINS
-                .iter()
-                .map(|x| x.to_string())
-                .collect::<Vec<String>>(),
-            cmake_args: vec![],
-            build_type: BuildType::Debug,
-            parallel_jobs: Some(8),
-            event_handlers: EventHandlers::compile_logs_only(),
-            build_tests: true,
-        }
-    }
 }
 
 impl BuildVerb {
@@ -319,20 +305,37 @@ impl BuildVerb {
     }
 }
 
+const DECO: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack)));
+const HEADER: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue)));
+
 macro_rules! header {
     ($($l:tt)*) => {
-        print!("┌[ ");
+        print!("{DECO}┌[{DECO:#} {HEADER}");
         print!($($l)*);
-        println!(" ]");
+        println!("{HEADER:#} {DECO}]{DECO:#}");
+    };
+}
+macro_rules! context {
+    ($($l:tt)*) => {
+        print!("{DECO}└>{DECO:#} ");
+        println!($($l)*);
     };
 }
 
-fn log_command(command: &Command) {
-    print!("└> {}", command.get_program().to_string_lossy());
+fn print_command(command: &Command) {
+    print!(
+        "{DECO}└>{DECO:#} {}",
+        command.get_program().to_string_lossy()
+    );
     for arg in command.get_args() {
         print!(" {}", arg.to_string_lossy());
     }
     println!();
+    divider();
+}
+
+fn divider() {
+    println!("{DECO}[ \\ \\ \\{DECO:#} Output {DECO}/ / / ]{DECO:#}");
 }
 
 impl ConfiguredBuild {
@@ -349,7 +352,7 @@ impl ConfiguredBuild {
                 cmd.arg("--packages-select").arg(package);
             }
         }
-        log_command(&cmd);
+        print_command(&cmd);
         cmd.status().expect("'colcon' not found")
     }
 }
@@ -359,7 +362,7 @@ impl BasicVerb {
         let mut cmd = Command::new("colcon");
         cmd.current_dir(&self.workspace);
         cmd.args(self.args.iter());
-        log_command(&cmd);
+        print_command(&cmd);
         cmd.status().expect("'colcon' not found")
     }
 }
@@ -369,7 +372,7 @@ fn ninja_build_target(workspace: &str, package: &str, target: &str) -> ExitStatu
     cmd.arg("-C");
     cmd.arg(format!("{workspace}/build/{package}"));
     cmd.arg(target);
-    log_command(&cmd);
+    print_command(&cmd);
     cmd.status().expect("'ninja' not found")
 }
 
@@ -377,10 +380,10 @@ fn run_single_ctest(workspace: &str, package: &str, target: &str) -> ExitStatus 
     let mut cmd = Command::new("ctest");
     cmd.arg("--test-dir");
     cmd.arg(format!("{workspace}/build/{package}"));
-    // cmd.arg("--output-on-failure");
+    cmd.arg("--output-on-failure");
     cmd.arg("-R");
     cmd.arg(format!("^{target}$"));
-    log_command(&cmd);
+    print_command(&cmd);
     cmd.status().expect("'ctest' not found")
 }
 
@@ -503,16 +506,18 @@ fn main() {
         .workspace
         .or_else(detect_workspace)
         .unwrap_or(".".into());
+    let ws_str = Path::new(&ws)
+        .canonicalize()
+        .map(|x| x.to_string_lossy().to_string())
+        .unwrap_or(ws.clone());
     let cfg_file_path = Path::new(&ws).join(COLB_CONFIG_FILENAME);
-    print!(
-        "┌[ Workspace ]\n└> {}",
-        Path::new(&ws)
-            .canonicalize()
-            .map(|x| x.to_string_lossy().to_string())
-            .unwrap_or(ws.clone())
-    );
+    header!("Workspace");
     let config = if cfg_file_path.exists() {
-        println!(" (Using configuration from {})", COLB_CONFIG_FILENAME);
+        context!(
+            "{} (Using configuration from {})",
+            &ws_str,
+            COLB_CONFIG_FILENAME
+        );
         let data = std::fs::read_to_string(&cfg_file_path)
             .map_err(config_file_err)
             .unwrap();
@@ -520,7 +525,7 @@ fn main() {
             .map_err(config_parse_err)
             .unwrap()
     } else {
-        println!(" (Unconfigured)");
+        context!("{} (Unconfigured)", &ws_str);
         Config::default()
     };
     match &cli.verb {
@@ -571,7 +576,7 @@ fn main() {
                 .or_else(exit_on_not_found)
                 .expect("should have exited");
             if !skip_dependencies {
-                header!("Building dependencies");
+                header!("Building dependencies for '{}'", package);
                 let status = ColconInvocation::new(&ws, false)
                     .build(&BuildOutput::default())
                     .configure(&config.upstream)
@@ -596,7 +601,7 @@ fn main() {
                 .or_else(exit_on_not_found)
                 .expect("should have exited");
             if *rebuild_dependencies && !skip_rebuild {
-                header!("Building dependencies");
+                header!("Building dependencies for '{}'", package);
                 let status = ColconInvocation::new(&ws, false)
                     .build(&BuildOutput::default())
                     .configure(&config.upstream)
