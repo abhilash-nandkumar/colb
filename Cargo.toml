@@ -11,3 +11,5 @@ lto = true
 
 [dependencies]
 clap = { version = "4.5.17", features = ["derive"] }
+serde = { version = "1.0.210", features = ["derive"] }
+toml = "0.8.19"

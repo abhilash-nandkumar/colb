@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::{
     env,
+    io::Write,
     ops::Deref,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
@@ -7,6 +9,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 
+#[derive(Serialize, Deserialize)]
 enum BuildType {
     Debug,
     Release,
@@ -82,6 +85,7 @@ struct BuildOutput {
     merge: bool,
 }
 
+#[derive(Serialize, Deserialize)]
 struct EventHandlers {
     desktop_notification: bool,
     console_cohesion: bool,
@@ -128,6 +132,7 @@ impl EventHandlers {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct BuildConfiguration {
     mixins: Vec<String>,
     cmake_args: Vec<String>,
@@ -146,6 +151,21 @@ struct TestResultConfig {
     package: String,
     verbose: bool,
     all: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Config {
+    upstream: BuildConfiguration,
+    package: BuildConfiguration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            upstream: BuildConfiguration::upstream(),
+            package: BuildConfiguration::active(),
+        }
+    }
 }
 
 enum What {
@@ -462,13 +482,19 @@ fn exit_on_error(status: ExitStatus) {
     }
 }
 
-// TODOs:
-// - expose more config options
-// - persist/load options from disk
-
 fn main() {
     let exit_on_not_found = || {
         eprintln!("Could not detect package, try specifying it explicitly!");
+        std::process::exit(-1);
+    };
+
+    let config_file_err = |err| {
+        eprintln!("Could not open config file: {}", err);
+        std::process::exit(-1);
+    };
+
+    let config_parse_err = |err| {
+        eprintln!("Could not parse config file: {}", err);
         std::process::exit(-1);
     };
 
@@ -485,11 +511,18 @@ fn main() {
             .map(|x| x.to_string_lossy().to_string())
             .unwrap_or(ws.clone())
     );
-    if cfg_file_path.exists() {
+    let config = if cfg_file_path.exists() {
         println!(" (Using configuration from {})", COLB_CONFIG_FILENAME);
+        let data = std::fs::read_to_string(&cfg_file_path)
+            .map_err(config_file_err)
+            .unwrap();
+        toml::from_str::<Config>(&data)
+            .map_err(config_parse_err)
+            .unwrap()
     } else {
         println!(" (Unconfigured)");
-    }
+        Config::default()
+    };
     match &cli.verb {
         Verbs::Init { force } => {
             if cfg_file_path.exists() && !force {
@@ -500,11 +533,25 @@ fn main() {
                 std::process::exit(-1);
             }
             match std::fs::File::create(&cfg_file_path) {
-                Ok(_) => {
-                    println!(
-                        "Initialized default configuration at '{}'",
-                        &cfg_file_path.to_string_lossy()
+                Ok(mut f) => {
+                    let res = f.write_all(
+                        toml::to_string_pretty(&Config::default())
+                            .expect("Default config should be serializable")
+                            .as_bytes(),
                     );
+                    if res.is_ok() {
+                        println!(
+                            "Initialized default configuration at '{}'",
+                            &cfg_file_path.to_string_lossy()
+                        );
+                        std::process::exit(0);
+                    }
+                    eprintln!(
+                        "Could not cerate '{}': {}",
+                        cfg_file_path.to_string_lossy(),
+                        res.unwrap_err()
+                    );
+                    std::process::exit(-1);
                 }
                 Err(e) => {
                     eprintln!(
@@ -527,14 +574,14 @@ fn main() {
                 header!("Building dependencies");
                 let status = ColconInvocation::new(&ws, false)
                     .build(&BuildOutput::default())
-                    .configure(&BuildConfiguration::upstream())
+                    .configure(&config.upstream)
                     .run(&What::DependenciesFor(package.clone()));
                 exit_on_error(status);
             }
             header!("Building '{package}'");
             let status = ColconInvocation::new(&ws, false)
                 .build(&BuildOutput::default())
-                .configure(&BuildConfiguration::active())
+                .configure(&config.package)
                 .run(&What::ThisPackage(package.clone()));
             exit_on_error(status);
         }
@@ -552,14 +599,14 @@ fn main() {
                 header!("Building dependencies");
                 let status = ColconInvocation::new(&ws, false)
                     .build(&BuildOutput::default())
-                    .configure(&BuildConfiguration::upstream())
+                    .configure(&config.upstream)
                     .run(&What::DependenciesFor(package.clone()));
                 exit_on_error(status);
                 if test.is_some() {
                     header!("Building '{package}'");
                     let status = ColconInvocation::new(&ws, false)
                         .build(&BuildOutput::default())
-                        .configure(&BuildConfiguration::active())
+                        .configure(&config.package)
                         .run(&What::ThisPackage(package.clone()));
                     exit_on_error(status);
                 }
@@ -573,7 +620,7 @@ fn main() {
                     header!("Building '{package}'");
                     let status = ColconInvocation::new(&ws, false)
                         .build(&BuildOutput::default())
-                        .configure(&BuildConfiguration::for_testing())
+                        .configure(&config.package)
                         .run(&What::ThisPackage(package.clone()));
                     exit_on_error(status);
                 }
