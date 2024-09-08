@@ -158,7 +158,7 @@ impl ColconInvocation {
         let mut args = ArgStack::default();
         args.arg("--log-base");
         if log {
-            args.arg(format!("{workspace}/log"));
+            args.arg("log");
         } else {
             args.arg("/dev/null");
         }
@@ -175,11 +175,7 @@ impl ColconInvocation {
         };
         res.args.arg("build");
         res.args
-            .arg("--build-base")
-            .arg(format!("{}/build", res.workspace));
-        res.args
-            .arg("--install-base")
-            .arg(format!("{}/install", res.workspace));
+            .args(["--build-base", "build", "--install-base", "install"]);
         if base_setup.symlink {
             res.args.arg("--symlink-install");
         }
@@ -210,10 +206,8 @@ impl ColconInvocation {
         };
         // TODO: log is probably needed here?
         res.args.arg("test-result");
-        res.args.args([
-            "--test-result-base",
-            &format!("{}/build/{}", res.workspace, config.package),
-        ]);
+        res.args
+            .args(["--test-result-base", &format!("build/{}", config.package)]);
         if config.verbose {
             res.args.arg("--verbose");
         }
@@ -469,7 +463,13 @@ fn main() {
         .workspace
         .or_else(detect_workspace)
         .unwrap_or(".".into());
-    println!("Workspace is {ws}");
+    println!(
+        "┌[ Workspace ]\n└> {}",
+        Path::new(&ws)
+            .canonicalize()
+            .map(|x| x.to_string_lossy().to_string())
+            .unwrap_or(ws.clone())
+    );
     match &cli.verb {
         Verbs::Build {
             package,
