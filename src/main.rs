@@ -485,6 +485,9 @@ fn exit_on_error(status: ExitStatus) {
     }
 }
 
+// TODOs:
+// - Allow updating options via command line (f.e. `colb build foo --build-type Release`)
+
 fn main() {
     let exit_on_not_found = || {
         eprintln!("Could not detect package, try specifying it explicitly!");
