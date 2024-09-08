@@ -1,5 +1,7 @@
 use std::{
+    env,
     ops::Deref,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
 
@@ -61,14 +63,17 @@ struct ColconInvocation {
 
 struct BuildVerb {
     args: ArgStack,
+    workspace: String,
 }
 
 struct BasicVerb {
     args: ArgStack,
+    workspace: String,
 }
 
 struct ConfiguredBuild {
     args: ArgStack,
+    workspace: String,
 }
 
 #[derive(Default)]
@@ -164,14 +169,17 @@ impl ColconInvocation {
     }
 
     fn build(self, base_setup: &BuildOutput) -> BuildVerb {
-        let mut res = BuildVerb { args: self.args };
+        let mut res = BuildVerb {
+            args: self.args,
+            workspace: self.workspace,
+        };
         res.args.arg("build");
         res.args
             .arg("--build-base")
-            .arg(format!("{}/build", self.workspace));
+            .arg(format!("{}/build", res.workspace));
         res.args
             .arg("--install-base")
-            .arg(format!("{}/install", self.workspace));
+            .arg(format!("{}/install", res.workspace));
         if base_setup.symlink {
             res.args.arg("--symlink-install");
         }
@@ -182,7 +190,10 @@ impl ColconInvocation {
     }
 
     fn test(self, config: &TestConfiguration) -> BasicVerb {
-        let mut res = BasicVerb { args: self.args };
+        let mut res = BasicVerb {
+            args: self.args,
+            workspace: self.workspace,
+        };
         // TODO: log is probably needed here?
         res.args.arg("test");
         res.args.arg("--event-handlers");
@@ -193,12 +204,15 @@ impl ColconInvocation {
     }
 
     fn test_result(self, config: &TestResultConfig) -> BasicVerb {
-        let mut res = BasicVerb { args: self.args };
+        let mut res = BasicVerb {
+            args: self.args,
+            workspace: self.workspace,
+        };
         // TODO: log is probably needed here?
         res.args.arg("test-result");
         res.args.args([
             "--test-result-base",
-            &format!("{}/build/{}", self.workspace, config.package),
+            &format!("{}/build/{}", res.workspace, config.package),
         ]);
         if config.verbose {
             res.args.arg("--verbose");
@@ -267,7 +281,10 @@ impl BuildConfiguration {
 
 impl BuildVerb {
     fn configure(self, config: &BuildConfiguration) -> ConfiguredBuild {
-        let mut res = ConfiguredBuild { args: self.args };
+        let mut res = ConfiguredBuild {
+            args: self.args,
+            workspace: self.workspace,
+        };
         if let Some(n) = config.parallel_jobs {
             let n_arg = format!("{}", n);
             res.args
@@ -307,6 +324,7 @@ fn log_command(command: &Command) {
 impl ConfiguredBuild {
     fn run(&self, what: &What) -> ExitStatus {
         let mut cmd = Command::new("colcon");
+        cmd.current_dir(&self.workspace);
         cmd.args(self.args.iter());
         match what {
             What::DependenciesFor(package) => {
@@ -325,6 +343,7 @@ impl ConfiguredBuild {
 impl BasicVerb {
     fn run(&self) -> ExitStatus {
         let mut cmd = Command::new("colcon");
+        cmd.current_dir(&self.workspace);
         cmd.args(self.args.iter());
         log_command(&cmd);
         cmd.status().expect("'colcon' not found")
@@ -351,6 +370,36 @@ fn run_single_ctest(workspace: &str, package: &str, target: &str) -> ExitStatus 
     cmd.status().expect("'ctest' not found")
 }
 
+fn contains_marker(path: &Path, marker: &str) -> Option<PathBuf> {
+    let candidate = path.join(marker);
+    match candidate.try_exists() {
+        Ok(true) => Some(path.to_path_buf()),
+        _ => None,
+    }
+}
+
+/// Search upward, and if we hit a package.xml, use that folder name as the package
+fn find_upwards(marker: &str) -> Option<PathBuf> {
+    let mut cwd = env::current_dir().and_then(|p| p.canonicalize()).ok()?;
+    let mut res = contains_marker(&cwd, marker);
+    while res.is_none() {
+        cwd = cwd.parent().map(|x| x.to_path_buf())?;
+        res = contains_marker(&cwd, marker);
+    }
+    res
+}
+
+fn package_or(package: Option<String>) -> Option<String> {
+    if package.is_some() {
+        return package;
+    }
+    find_upwards("package.xml").and_then(|f| f.file_name().map(|n| n.to_string_lossy().to_string()))
+}
+
+fn detect_workspace() -> Option<String> {
+    find_upwards("build").map(|n| n.to_string_lossy().to_string())
+}
+
 /// A colcon wrapper for faster change compile test cycles
 #[derive(Parser)]
 #[command(version, about)]
@@ -366,8 +415,8 @@ struct Cli {
 enum Verbs {
     /// Build a package
     Build {
-        /// The package to build
-        package: String,
+        /// The package to build (default: current directory)
+        package: Option<String>,
 
         /// Whether to skip rebuilding dependencies
         #[arg(short, long, default_value_t = false)]
@@ -376,8 +425,8 @@ enum Verbs {
 
     /// Run tests for a package
     Test {
-        /// The package to test
-        package: String,
+        /// The package to test (default: current directory)
+        package: Option<String>,
 
         /// Build and run only this test (default: run all tests)
         #[arg(short, long)]
@@ -406,20 +455,29 @@ fn exit_on_error(status: ExitStatus) {
 }
 
 // TODOs:
-// - auto-detect package
-// - test from filename
-// - get test stdout (--rerun-failed --output-on-failure)
 // - expose more config options
 // - persist/load options from disk
 
 fn main() {
+    let exit_on_not_found = || {
+        eprintln!("Could not detect package, try specifying it explicitly!");
+        std::process::exit(-1);
+    };
+
     let cli = Cli::parse();
-    let ws = cli.workspace.unwrap_or(".".into());
+    let ws = cli
+        .workspace
+        .or_else(detect_workspace)
+        .unwrap_or(".".into());
+    println!("Workspace is {ws}");
     match &cli.verb {
         Verbs::Build {
             package,
             skip_dependencies,
         } => {
+            let package = package_or(package.clone())
+                .or_else(exit_on_not_found)
+                .expect("should have exited");
             if !skip_dependencies {
                 header!("Building dependencies");
                 let status = ColconInvocation::new(&ws, false)
@@ -442,6 +500,9 @@ fn main() {
             skip_rebuild,
             rebuild_dependencies,
         } => {
+            let package = package_or(package.clone())
+                .or_else(exit_on_not_found)
+                .expect("should have exited");
             if *rebuild_dependencies && !skip_rebuild {
                 header!("Building dependencies");
                 let status = ColconInvocation::new(&ws, false)
@@ -461,7 +522,7 @@ fn main() {
             if !skip_rebuild {
                 if let Some(test) = test {
                     header!("Building test '{test}' in '{package}'");
-                    let status = ninja_build_target(&ws, package, test);
+                    let status = ninja_build_target(&ws, &package, test);
                     exit_on_error(status);
                 } else {
                     header!("Building '{package}'");
@@ -474,7 +535,7 @@ fn main() {
             }
             if let Some(test) = test {
                 header!("Running test '{test}' in '{package}'");
-                let status = run_single_ctest(&ws, package, test);
+                let status = run_single_ctest(&ws, &package, test);
                 exit_on_error(status);
             } else {
                 header!("Running tests for '{package}'");
