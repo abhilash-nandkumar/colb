@@ -364,34 +364,42 @@ fn run_single_ctest(workspace: &str, package: &str, target: &str) -> ExitStatus 
     cmd.status().expect("'ctest' not found")
 }
 
-fn contains_marker(path: &Path, marker: &str) -> Option<PathBuf> {
-    let candidate = path.join(marker);
-    match candidate.try_exists() {
-        Ok(true) => Some(path.to_path_buf()),
-        _ => None,
+fn contains_marker(path: &Path, markers: &[&str]) -> bool {
+    for m in markers {
+        let candidate = path.join(m);
+        if let Ok(x) = candidate.try_exists() {
+            if x {
+                return true;
+            }
+        }
     }
+    false
 }
 
 /// Search upward, and if we hit a package.xml, use that folder name as the package
-fn find_upwards(marker: &str) -> Option<PathBuf> {
-    let mut cwd = env::current_dir().and_then(|p| p.canonicalize()).ok()?;
-    let mut res = contains_marker(&cwd, marker);
-    while res.is_none() {
-        cwd = cwd.parent().map(|x| x.to_path_buf())?;
-        res = contains_marker(&cwd, marker);
+fn find_upwards(markers: &[&str]) -> Option<PathBuf> {
+    let mut cwd = env::current_dir().and_then(|p| p.canonicalize()).ok();
+    while let Some(p) = cwd {
+        if contains_marker(&p, markers) {
+            return Some(p.to_path_buf());
+        }
+        cwd = p.parent().map(|x| x.to_path_buf());
     }
-    res
+    None
 }
 
 fn package_or(package: Option<String>) -> Option<String> {
     if package.is_some() {
         return package;
     }
-    find_upwards("package.xml").and_then(|f| f.file_name().map(|n| n.to_string_lossy().to_string()))
+    find_upwards(&["package.xml"])
+        .and_then(|f| f.file_name().map(|n| n.to_string_lossy().to_string()))
 }
 
+const COLB_CONFIG_FILENAME: &str = ".colb.toml";
+
 fn detect_workspace() -> Option<String> {
-    find_upwards("build").map(|n| n.to_string_lossy().to_string())
+    find_upwards(&["build", COLB_CONFIG_FILENAME]).map(|n| n.to_string_lossy().to_string())
 }
 
 /// A colcon wrapper for faster change compile test cycles
@@ -407,6 +415,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Verbs {
+    /// Write default configuration file
+    Init {
+        /// Wheter to overwrite existing config files
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
+    },
     /// Build a package
     Build {
         /// The package to build (default: current directory)
@@ -463,14 +477,45 @@ fn main() {
         .workspace
         .or_else(detect_workspace)
         .unwrap_or(".".into());
-    println!(
+    let cfg_file_path = Path::new(&ws).join(COLB_CONFIG_FILENAME);
+    print!(
         "┌[ Workspace ]\n└> {}",
         Path::new(&ws)
             .canonicalize()
             .map(|x| x.to_string_lossy().to_string())
             .unwrap_or(ws.clone())
     );
+    if cfg_file_path.exists() {
+        println!(" (Using configuration from {})", COLB_CONFIG_FILENAME);
+    } else {
+        println!(" (Unconfigured)");
+    }
     match &cli.verb {
+        Verbs::Init { force } => {
+            if cfg_file_path.exists() && !force {
+                println!(
+                    "Will not overwrite '{}' without --force",
+                    cfg_file_path.to_string_lossy()
+                );
+                std::process::exit(-1);
+            }
+            match std::fs::File::create(&cfg_file_path) {
+                Ok(_) => {
+                    println!(
+                        "Initialized default configuration at '{}'",
+                        &cfg_file_path.to_string_lossy()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Could not cerate '{}': {}",
+                        cfg_file_path.to_string_lossy(),
+                        e
+                    );
+                    std::process::exit(-1);
+                }
+            }
+        }
         Verbs::Build {
             package,
             skip_dependencies,
