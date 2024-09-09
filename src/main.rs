@@ -19,7 +19,6 @@ enum BuildType {
 
 impl BuildType {
     fn apply(&self, cmd: &mut ArgStack) {
-        cmd.arg("--cmake-args");
         let t = match self {
             BuildType::Debug => "Debug",
             BuildType::Release => "Release",
