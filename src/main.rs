@@ -2,7 +2,7 @@ use anstyle::{AnsiColor, Color, Style};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
-    io::Write,
+    io::{IsTerminal, Write},
     ops::Deref,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
@@ -305,27 +305,49 @@ impl BuildVerb {
 }
 
 const DECO: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack)));
-const HEADER: Style = Style::new().bold().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue)));
+const HEADER: Style = Style::new()
+    .bold()
+    .fg_color(Some(Color::Ansi(AnsiColor::BrightBlue)));
+
+fn use_color() -> bool {
+    std::io::stdout().is_terminal()
+}
 
 macro_rules! header {
     ($($l:tt)*) => {
-        print!("{DECO}┌[{DECO:#} {HEADER}");
-        print!($($l)*);
-        println!("{HEADER:#} {DECO}]{DECO:#}");
+        if use_color() {
+            print!("{DECO}┌[{DECO:#} {HEADER}");
+            print!($($l)*);
+            println!("{HEADER:#} {DECO}]{DECO:#}");
+        } else {
+            print!("┌[ ");
+            print!($($l)*);
+            println!(" ]");
+        }
     };
 }
 macro_rules! context {
     ($($l:tt)*) => {
-        print!("{DECO}└>{DECO:#} ");
-        println!($($l)*);
+        if use_color() {
+            print!("{DECO}└>{DECO:#} ");
+            println!($($l)*);
+        } else {
+            print!("└> ");
+            println!($($l)*);
+
+        }
     };
 }
 
 fn print_command(command: &Command) {
-    print!(
-        "{DECO}└>{DECO:#} {}",
-        command.get_program().to_string_lossy()
-    );
+    if use_color() {
+        print!(
+            "{DECO}└>{DECO:#} {}",
+            command.get_program().to_string_lossy()
+        );
+    } else {
+        print!("└> {}", command.get_program().to_string_lossy());
+    }
     for arg in command.get_args() {
         print!(" {}", arg.to_string_lossy());
     }
@@ -334,7 +356,11 @@ fn print_command(command: &Command) {
 }
 
 fn divider() {
-    println!("{DECO}[ \\ \\ \\{DECO:#} Output {DECO}/ / / ]{DECO:#}");
+    if use_color() {
+        println!("{DECO}[ \\ \\ \\{DECO:#} Output {DECO}/ / / ]{DECO:#}");
+    } else {
+        println!("[ \\ \\ \\ Output / / / ]");
+    }
 }
 
 impl ConfiguredBuild {
