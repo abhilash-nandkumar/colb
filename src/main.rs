@@ -10,8 +10,9 @@ use std::{
 
 use clap::{Parser, Subcommand};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, clap::ValueEnum, Default, Clone)]
 enum BuildType {
+    #[default]
     Debug,
     Release,
     RelWithDebInfo,
@@ -477,6 +478,10 @@ enum Verbs {
         /// Whether to skip rebuilding dependencies
         #[arg(short, long, default_value_t = false)]
         skip_dependencies: bool,
+
+        /// Overwrite the build type from the config file
+        #[arg(short, long)]
+        build_type: Option<BuildType>
     },
 
     /// Run tests for a package
@@ -540,7 +545,7 @@ fn main() {
         .unwrap_or(ws.clone());
     let cfg_file_path = Path::new(&ws).join(COLB_CONFIG_FILENAME);
     header!("Workspace");
-    let config = if cfg_file_path.exists() {
+    let mut config = if cfg_file_path.exists() {
         context!(
             "{} (Using configuration from {})",
             &ws_str,
@@ -599,6 +604,7 @@ fn main() {
         Verbs::Build {
             package,
             skip_dependencies,
+            build_type,
         } => {
             let package = package_or(package.clone())
                 .or_else(exit_on_not_found)
@@ -610,6 +616,9 @@ fn main() {
                     .configure(&config.upstream)
                     .run(&What::DependenciesFor(package.clone()));
                 exit_on_error(status);
+            }
+            if let Some(t) = build_type {
+                config.package.build_type = t.clone();
             }
             header!("Building '{package}'");
             let status = ColconInvocation::new(&ws, false)
