@@ -484,6 +484,10 @@ enum Verbs {
         #[arg(short, long, default_value_t = false)]
         skip_dependencies: bool,
 
+        /// Whether to skip building tests
+        #[arg(short = 't', long, default_value_t = false)]
+        skip_tests: bool,
+
         /// Overwrite the build type from the config file
         #[arg(short, long)]
         build_type: Option<BuildType>,
@@ -613,8 +617,13 @@ fn main() {
         Verbs::Build {
             package,
             skip_dependencies,
+            skip_tests,
             build_type,
         } => {
+            if *skip_tests {
+                config.upstream.build_tests = false;
+                config.package.build_tests = false;
+            }
             let package = package_or(package.clone())
                 .or_else(exit_on_not_found)
                 .expect("should have exited");
