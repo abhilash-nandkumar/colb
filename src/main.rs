@@ -145,6 +145,8 @@ struct BuildConfiguration {
 
 struct TestConfiguration {
     package: String,
+    /// If set, run only this test (using ctest-args)
+    test: Option<String>,
     event_handlers: EventHandlers,
 }
 
@@ -216,6 +218,10 @@ impl ColconInvocation {
         res.args.arg("--event-handlers");
         config.event_handlers.apply(&mut res.args);
         res.args.args(["--ctest-args", "--output-on-failure"]);
+        if let Some(test) = &config.test {
+            res.args.arg("-R");
+            res.args.arg(format!("^{test}$"));
+        }
         res.args.args(["--packages-select", &config.package]);
         res
     }
@@ -335,7 +341,6 @@ macro_rules! context {
         } else {
             print!("└> ");
             println!($($l)*);
-
         }
     };
 }
@@ -481,7 +486,7 @@ enum Verbs {
 
         /// Overwrite the build type from the config file
         #[arg(short, long)]
-        build_type: Option<BuildType>
+        build_type: Option<BuildType>,
     },
 
     /// Run tests for a package
@@ -492,6 +497,10 @@ enum Verbs {
         /// Build and run only this test (default: run all tests)
         #[arg(short, long)]
         test: Option<String>,
+
+        /// Run through ctest directly (only works for single tests, default: use colcon test)
+        #[arg(short, long, default_value_t = false)]
+        direct: bool,
 
         /// Don't rebuild the package
         #[arg(short, long, default_value_t = false)]
@@ -631,6 +640,7 @@ fn main() {
         Verbs::Test {
             package,
             test,
+            direct,
             skip_rebuild,
             rebuild_dependencies,
         } => {
@@ -669,27 +679,31 @@ fn main() {
             }
             if let Some(test) = test {
                 header!("Running test '{test}' in '{package}'");
-                let status = run_single_ctest(&ws, &package, test);
-                exit_on_error(status);
+                if *direct {
+                    let status = run_single_ctest(&ws, &package, test);
+                    exit_on_error(status);
+                    return;
+                }
             } else {
                 header!("Running tests for '{package}'");
-                let status = ColconInvocation::new(&ws, true)
-                    .test(&TestConfiguration {
-                        package: package.clone(),
-                        event_handlers: EventHandlers::silent(),
-                    })
-                    .run();
-                exit_on_error(status);
-                header!("Test results for '{package}'");
-                let status = ColconInvocation::new(&ws, false)
-                    .test_result(&TestResultConfig {
-                        package: package.clone(),
-                        verbose: true,
-                        all: true,
-                    })
-                    .run();
-                exit_on_error(status);
             }
+            let status = ColconInvocation::new(&ws, true)
+                .test(&TestConfiguration {
+                    package: package.clone(),
+                    test: test.clone(),
+                    event_handlers: EventHandlers::silent(),
+                })
+                .run();
+            exit_on_error(status);
+            header!("Test results for '{package}'");
+            let status = ColconInvocation::new(&ws, false)
+                .test_result(&TestResultConfig {
+                    package: package.clone(),
+                    verbose: true,
+                    all: true,
+                })
+                .run();
+            exit_on_error(status);
         }
     }
 }
