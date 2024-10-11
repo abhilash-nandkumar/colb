@@ -1,7 +1,7 @@
 use anstyle::{AnsiColor, Color, Style};
 use serde::{Deserialize, Serialize};
 use std::{
-    env,
+    env, fs,
     io::{IsTerminal, Write},
     ops::Deref,
     path::{Path, PathBuf},
@@ -346,19 +346,20 @@ macro_rules! context {
 }
 
 fn print_command(command: &Command) {
-    if use_color() {
-        print!(
-            "{DECO}└>{DECO:#} {}",
-            command.get_program().to_string_lossy()
-        );
-    } else {
-        print!("└> {}", command.get_program().to_string_lossy());
-    }
+    print_command_arrow(&command.get_program().to_string_lossy());
     for arg in command.get_args() {
         print!(" {}", arg.to_string_lossy());
     }
     println!();
     divider();
+}
+
+fn print_command_arrow(command: &str) {
+    if use_color() {
+        print!("{DECO}└>{DECO:#} {}", command);
+    } else {
+        print!("└> {}", command);
+    }
 }
 
 fn divider() {
@@ -416,6 +417,30 @@ fn run_single_ctest(workspace: &str, package: &str, target: &str) -> ExitStatus 
     cmd.arg(format!("^{target}$"));
     print_command(&cmd);
     cmd.status().expect("'ctest' not found")
+}
+
+fn clean_package(workspace: &Path, package: &str) {
+    let build_folder = workspace.join("build").join(package);
+    let install_folder = workspace.join("install").join(package);
+    let report_error = |err| {
+        eprintln!("Error: {err}");
+    };
+    let mut did_stuff = false;
+    if build_folder.exists() {
+        print_command_arrow("rm -r ");
+        println!("'{}'", build_folder.to_string_lossy());
+        let _ = fs::remove_dir_all(build_folder).map_err(report_error);
+        did_stuff = true;
+    }
+    if install_folder.exists() {
+        print_command_arrow("rm -r ");
+        println!("'{}'", install_folder.to_string_lossy());
+        let _ = fs::remove_dir_all(install_folder).map_err(report_error);
+        did_stuff = true;
+    }
+    if !did_stuff {
+        print_command_arrow("# Nothing to clean up\n");
+    }
 }
 
 fn contains_marker(path: &Path, markers: &[&str]) -> bool {
@@ -513,6 +538,13 @@ enum Verbs {
         /// Rebuild dependencies of package
         #[arg(short, long, default_value_t = false)]
         rebuild_dependencies: bool,
+    },
+    /// Remove build and install folders of a package
+    ///
+    /// Note: Does not support merged install spaces
+    Clean {
+        /// The package to clean
+        package: String,
     },
 }
 
@@ -713,6 +745,13 @@ fn main() {
                 })
                 .run();
             exit_on_error(status);
+        }
+        Verbs::Clean { package } => {
+            if package.is_empty() {
+                eprintln!("Package argument must not be empty!",);
+            }
+            header!("Cleaning up '{package}'");
+            clean_package(Path::new(&ws_str), package)
         }
     }
 }
