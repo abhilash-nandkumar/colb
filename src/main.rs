@@ -546,6 +546,8 @@ enum Verbs {
         /// The package to clean
         package: String,
     },
+    /// Opens the configuration file in $EDITOR
+    Config {},
 }
 
 fn exit_on_error(status: ExitStatus) {
@@ -646,6 +648,7 @@ fn main() {
                 }
             }
         }
+
         Verbs::Build {
             package,
             skip_dependencies,
@@ -746,6 +749,7 @@ fn main() {
                 .run();
             exit_on_error(status);
         }
+
         Verbs::Clean { package } => {
             if package.is_empty() {
                 eprintln!("Package argument must not be empty!",);
@@ -753,5 +757,24 @@ fn main() {
             header!("Cleaning up '{package}'");
             clean_package(Path::new(&ws_str), package)
         }
+
+        Verbs::Config {} => match std::env::var("EDITOR") {
+            Ok(editor) => match Command::new(&editor).arg(cfg_file_path).status() {
+                Ok(s) => {
+                    if let Some(code) = s.code() {
+                        std::process::exit(code);
+                    }
+                    std::process::exit(-1);
+                }
+                Err(e) => {
+                    eprintln!("Couldn't run $EDITOR '{editor}': {e}");
+                    std::process::exit(-1);
+                }
+            },
+            Err(e) => {
+                eprintln!("Couldn't read $EDITOR: {e}");
+                std::process::exit(-1);
+            }
+        },
     }
 }
