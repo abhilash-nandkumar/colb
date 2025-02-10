@@ -562,6 +562,27 @@ fn exit_on_error(status: ExitStatus) {
     }
 }
 
+fn colb_config(cfg_file_path: &PathBuf) {
+    match std::env::var("EDITOR") {
+        Ok(editor) => match Command::new(&editor).arg(cfg_file_path).status() {
+            Ok(s) => {
+                if let Some(code) = s.code() {
+                    std::process::exit(code);
+                }
+                std::process::exit(-1);
+            }
+            Err(e) => {
+                eprintln!("Couldn't run $EDITOR '{editor}': {e}");
+                std::process::exit(-1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Couldn't read $EDITOR: {e}");
+            std::process::exit(-1);
+        }
+    }
+}
+
 // TODOs:
 // - Allow updating options via command line (f.e. `colb build foo --build-type Release`)
 
@@ -591,6 +612,10 @@ fn main() {
         .map(|x| x.to_string_lossy().to_string())
         .unwrap_or(ws.clone());
     let cfg_file_path = Path::new(&ws).join(COLB_CONFIG_FILENAME);
+    if matches!(cli.verb, Verbs::Config {}) {
+        colb_config(&cfg_file_path);
+        return;
+    }
     header!("Workspace");
     let mut config = if cfg_file_path.exists() {
         context!(
@@ -758,23 +783,6 @@ fn main() {
             clean_package(Path::new(&ws_str), package)
         }
 
-        Verbs::Config {} => match std::env::var("EDITOR") {
-            Ok(editor) => match Command::new(&editor).arg(cfg_file_path).status() {
-                Ok(s) => {
-                    if let Some(code) = s.code() {
-                        std::process::exit(code);
-                    }
-                    std::process::exit(-1);
-                }
-                Err(e) => {
-                    eprintln!("Couldn't run $EDITOR '{editor}': {e}");
-                    std::process::exit(-1);
-                }
-            },
-            Err(e) => {
-                eprintln!("Couldn't read $EDITOR: {e}");
-                std::process::exit(-1);
-            }
-        },
+        Verbs::Config {} => unreachable!("Handled above"),
     }
 }
